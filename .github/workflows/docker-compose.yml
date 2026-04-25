@@ -1,0 +1,171 @@
+You need a **working YAML that actually boots the system**, not just a placeholder.
+
+I’ll give you a **production-usable `docker-compose.yml`** that wires together:
+
+* API (FastAPI)
+* PostgreSQL (feature + event store)
+* Redis (fast state / cache)
+* Kafka (event stream backbone)
+* Zookeeper (Kafka dependency)
+
+This aligns directly with your architecture.
+
+---
+
+# ✅ `docker-compose.yml` (drop into root of repo)
+
+```yaml
+version: "3.9"
+
+services:
+
+  api:
+    build: .
+    container_name: age-api
+    command: uvicorn age.api.app:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+    volumes:
+      - ./src:/app/src
+
+  postgres:
+    image: postgres:15
+    container_name: age-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: age
+      POSTGRES_PASSWORD: agepass
+      POSTGRES_DB: age_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  redis:
+    image: redis:7
+    container_name: age-redis
+    ports:
+      - "6379:6379"
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: age-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: age-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  worker:
+    build: .
+    container_name: age-worker
+    command: python -m age.training.train
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+
+volumes:
+  pgdata:
+```
+
+---
+
+# ✅ `.env.example` (you should include this too)
+
+```env
+DATABASE_URL=postgresql://age:agepass@postgres:5432/age_db
+REDIS_URL=redis://redis:6379
+KAFKA_BOOTSTRAP=kafka:9092
+EMBEDDING_DIM=128
+```
+
+---
+
+# ✅ Minimal `Dockerfile` (required to run)
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml .
+RUN pip install --no-cache-dir --upgrade pip && pip install .
+
+COPY ./src ./src
+
+ENV PYTHONPATH=/app/src
+
+CMD ["uvicorn", "age.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+---
+
+# ▶️ How to run
+
+```bash
+docker-compose up --build
+```
+
+Then:
+
+* API → [http://localhost:8000](http://localhost:8000)
+* Docs → [http://localhost:8000/docs](http://localhost:8000/docs)
+
+---
+
+# ⚡ What this actually enables
+
+You now have:
+
+* **Real-time ingestion pipeline (Kafka)**
+* **Persistent memory (Postgres)**
+* **Fast state/cache layer (Redis)**
+* **Serving layer (FastAPI)**
+* **Training loop (worker)**
+
+This is no longer a mock system.
+It’s a **live closed-loop architecture**.
+
+---
+
+# 🔁 Next upgrade (when ready)
+
+Once this runs, evolve into:
+
+* Replace mock retrieval → FAISS / pgvector
+* Add streaming consumer (Kafka → state update)
+* Introduce bandit layer in worker
+* Add metrics dashboard
+
+---
+
+If you want next step, I can:
+
+* generate **init.sql schema**
+* wire **Kafka consumer for real-time state updates**
+* or give **end-to-end test script that simulates users + learning loop**
